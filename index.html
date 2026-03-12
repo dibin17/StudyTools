@@ -82,7 +82,15 @@ header { display: flex; align-items: center; justify-content: space-between; mar
 /* ── CARDS TAB ── */
 .tab-actions { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
 .cards-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
-/* Edit card inline */
+/* Search bar */
+.cards-search { width: 100%; background: var(--surface); border: 1.5px solid var(--border); border-radius: 9px; color: var(--ink); font-family: 'Fraunces', serif; font-size: 0.88rem; padding: 8px 13px; outline: none; transition: border-color .15s; margin-bottom: 14px; }
+.cards-search:focus { border-color: var(--accent); }
+.cards-search::placeholder { color: var(--muted2); font-style: italic; }
+/* Drag reorder */
+.drag-handle { color: var(--muted2); cursor: grab; font-size: 0.9rem; padding: 0 4px; user-select: none; flex-shrink: 0; }
+.drag-handle:active { cursor: grabbing; }
+.flashcard-item.dragging { opacity: .4; border-style: dashed; }
+.flashcard-item.drag-over { border-color: var(--accent2); box-shadow: 0 0 0 2px var(--accent2); }
 .flashcard-item { background: var(--surface); border: 1.5px solid var(--border); border-radius: 10px; padding: 14px 18px; display: flex; align-items: flex-start; gap: 14px; transition: border-color .15s; }
 .flashcard-item:hover { border-color: var(--border2); }
 .flashcard-item.editing { border-color: var(--accent); }
@@ -281,6 +289,7 @@ input::placeholder, textarea::placeholder { color: var(--muted2); font-style: it
           <button class="btn btn-primary" onclick="addCard()">Add Card</button>
         </div>
       </div>
+      <input class="cards-search" id="cardsSearch" type="text" placeholder="Search cards..." oninput="renderCards()" style="display:none">
       <div class="cards-list" id="cardsList"></div>
     </div>
 
@@ -433,24 +442,87 @@ function openProject(id) {
   document.getElementById('panelTitle').textContent = proj().name;
   document.getElementById('projectPanel').classList.add('visible');
   document.getElementById('addCardForm').classList.remove('visible');
+  const s = document.getElementById('cardsSearch');
+  if (s) s.value = '';
   renderCards(); renderProjects(); renderQuizList();
   renderQuizBuilder();
 }
 
 // ── CARDS ─────────────────────────────────────────────
 function renderCards() {
-  const p = proj(); const list = document.getElementById('cardsList');
-  if (!p.cards.length) { list.innerHTML = `<div class="empty-state"><div class="emoji">📭</div><p>No cards yet.</p></div>`; return; }
-  list.innerHTML = p.cards.map((c,i) => `
-    <div class="flashcard-item" id="carditem-${i}">
-      <div class="card-index">${String(i+1).padStart(2,'0')}</div>
-      <div class="card-content" id="cardcontent-${i}">
+  const p = proj();
+  const list = document.getElementById('cardsList');
+  const searchEl = document.getElementById('cardsSearch');
+
+  // Show/hide search bar
+  if (searchEl) searchEl.style.display = p.cards.length > 4 ? 'block' : 'none';
+
+  if (!p.cards.length) {
+    list.innerHTML = `<div class="empty-state"><div class="emoji">📭</div><p>No cards yet.</p></div>`;
+    return;
+  }
+
+  const query = (searchEl ? searchEl.value : '').toLowerCase().trim();
+  const cards = p.cards.map((c,i) => ({...c, realIdx: i}));
+  const filtered = query ? cards.filter(c => c.q.toLowerCase().includes(query) || c.a.toLowerCase().includes(query)) : cards;
+
+  if (!filtered.length) {
+    list.innerHTML = `<div class="empty-state"><div class="emoji">🔍</div><p>No cards match "${query}"</p></div>`;
+    return;
+  }
+
+  list.innerHTML = filtered.map(c => `
+    <div class="flashcard-item" id="carditem-${c.realIdx}" draggable="${!query}" data-idx="${c.realIdx}"
+      ondragstart="dragCardStart(event,${c.realIdx})"
+      ondragover="dragCardOver(event)"
+      ondrop="dragCardDrop(event,${c.realIdx})"
+      ondragend="dragCardEnd()"
+      ondragleave="dragCardLeave(event)">
+      ${!query ? `<span class="drag-handle" title="Drag to reorder">⠿</span>` : ''}
+      <div class="card-index">${String(c.realIdx+1).padStart(2,'0')}</div>
+      <div class="card-content" id="cardcontent-${c.realIdx}">
         <div class="card-q">${esc(c.q)}</div>
         <div class="card-a">${esc(c.a)}</div>
       </div>
-      <span class="card-edit-btn" onclick="editCard(${i})" title="Edit">✎</span>
-      <span class="card-delete" onclick="deleteCard(${i})">✕</span>
+      <span class="card-edit-btn" onclick="editCard(${c.realIdx})" title="Edit">✎</span>
+      <span class="card-delete" onclick="deleteCard(${c.realIdx})">✕</span>
     </div>`).join('');
+}
+
+// ── DRAG REORDER ──────────────────────────────────────
+let dragSrcIdx = null;
+
+function dragCardStart(e, idx) {
+  dragSrcIdx = idx;
+  e.dataTransfer.effectAllowed = 'move';
+  setTimeout(() => document.querySelector(`[data-idx="${idx}"]`)?.classList.add('dragging'), 0);
+}
+
+function dragCardOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  e.currentTarget.classList.add('drag-over');
+}
+
+function dragCardLeave(e) {
+  e.currentTarget.classList.remove('drag-over');
+}
+
+function dragCardDrop(e, targetIdx) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  if (dragSrcIdx === null || dragSrcIdx === targetIdx) return;
+  const cards = proj().cards;
+  const [moved] = cards.splice(dragSrcIdx, 1);
+  cards.splice(targetIdx, 0, moved);
+  save(); renderCards(); renderProjects();
+}
+
+function dragCardEnd() {
+  dragSrcIdx = null;
+  document.querySelectorAll('.flashcard-item').forEach(el => {
+    el.classList.remove('dragging','drag-over');
+  });
 }
 
 function editCard(i) {
@@ -611,7 +683,8 @@ function renderQuestionCard(qu, qi) {
               onchange="setCorrect(${qi},${ci})">
             <input class="choice-input${c.correct?' correct-choice':''}" type="text"
               placeholder="Answer choice..." value="${esc(c.text)}"
-              oninput="updateChoice(${qi},${ci},this.value)">
+              oninput="updateChoice(${qi},${ci},this.value)"
+              onkeydown="choiceKeydown(event,${qi},${ci})">
             ${qu.choices.length > 2 ? `<span class="choice-del" onclick="deleteChoice(${qi},${ci})">✕</span>` : ''}
           </div>`).join('')}
       </div>
@@ -649,6 +722,31 @@ function updateQuestion(qi, field, val) {
   const canTake = q.questions.length > 0 && q.questions.every(qu => qu.choices.some(c=>c.correct) && qu.choices.filter(c=>c.text.trim()).length >= 2);
   const btn = document.querySelector('.builder-actions');
   if (btn) btn.innerHTML = canTake ? `<button class="btn btn-blue" onclick="takeQuiz('${q.id}')">▶ Take Quiz</button>` : '';
+}
+
+function choiceKeydown(e, qi, ci) {
+  const qu = getQuiz().questions[qi];
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (qu.choices.length < 5) {
+      // Add new choice then focus it
+      qu.choices.push({text:'',correct:false}); save(); renderQuizBuilder();
+      setTimeout(() => {
+        const newInput = document.querySelector(`#choicerow-${qi}-${qu.choices.length-1} .choice-input`);
+        if (newInput) newInput.focus();
+      }, 30);
+    }
+    return;
+  }
+  if (e.key === 'Tab' && !e.shiftKey) {
+    // Tab to next choice, or to explanation if last
+    const nextRow = document.querySelector(`#choicerow-${qi}-${ci+1} .choice-input`);
+    if (nextRow) {
+      e.preventDefault();
+      nextRow.focus();
+    }
+    // else let natural tab flow to explanation
+  }
 }
 
 function addChoice(qi) {
