@@ -169,7 +169,15 @@ input::placeholder, textarea::placeholder { color: var(--muted2); font-style: it
 .explanation-input:focus { border-color: var(--accent); color: var(--ink); }
 .add-q-row { display: flex; justify-content: center; }
 
-/* No quiz selected placeholder */
+/* Question type toggle */
+.q-type-toggle { display: flex; gap: 6px; margin-bottom: 10px; }
+.q-type-btn { font-family: 'DM Mono', monospace; font-size: 0.6rem; text-transform: uppercase; letter-spacing: .06em; padding: 4px 10px; border-radius: 6px; border: 1.5px solid var(--border2); background: transparent; color: var(--muted); cursor: pointer; transition: all .15s; }
+.q-type-btn.active { background: var(--accent3); border-color: var(--accent3); color: white; }
+/* Text answer input during quiz */
+.quiz-text-answer { width: 100%; background: var(--surface2); border: 1.5px solid var(--border); border-radius: 10px; color: var(--ink); font-family: 'Fraunces', serif; font-size: 1rem; padding: 13px 18px; outline: none; transition: border-color .15s; margin-bottom: 4px; }
+.quiz-text-answer:focus { border-color: var(--accent3); }
+.quiz-text-answer.correct-ans { border-color: var(--correct); background: var(--correct-bg); }
+.quiz-text-answer.wrong-ans { border-color: var(--wrong); background: var(--wrong-bg); }
 .no-quiz-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 60px 20px; color: var(--muted); gap: 10px; }
 .no-quiz-placeholder .emoji { font-size: 2rem; }
 .no-quiz-placeholder p { font-family: 'DM Mono', monospace; font-size: 0.72rem; }
@@ -397,7 +405,8 @@ function toggleDark(){
   d.hasAttribute('data-dark') ? d.removeAttribute('data-dark') : d.setAttribute('data-dark','');
   localStorage.setItem('dibinDark', d.hasAttribute('data-dark') ? '1' : '0');
 }
-if(localStorage.getItem('dibinDark') === '1') document.documentElement.setAttribute('data-dark','');
+// Default dark — only go light if user explicitly set it to 0
+if(localStorage.getItem('dibinDark') !== '0') document.documentElement.setAttribute('data-dark','');
 
 // ── STATE ────────────────────────────────────────────
 // projects: [{ id, name, cards: [{q,a}], quizzes: [{id, name, questions: [{q, choices:[{text,correct}], explanation}]}] }]
@@ -408,8 +417,16 @@ let activeQuizId = null; // currently open quiz in builder
 function save() { localStorage.setItem('fdProjects', JSON.stringify(projects)); }
 function proj(id) { return projects.find(p => p.id === (id || activeId)); }
 
-// Migrate old projects that don't have quizzes array
-projects.forEach(p => { if (!p.quizzes) p.quizzes = []; });
+// Migrate old projects that don't have quizzes array, and questions without type
+projects.forEach(p => {
+  if (!p.quizzes) p.quizzes = [];
+  p.quizzes.forEach(q => {
+    q.questions.forEach(qu => {
+      if (!qu.type) qu.type = 'mc';
+      if (!qu.choices) qu.choices = [];
+    });
+  });
+});
 
 // ── PANEL TABS ───────────────────────────────────────
 function switchPanelTab(name, btn) {
@@ -639,6 +656,14 @@ function deleteQuiz(e, qid) {
   renderQuizList(); renderQuizBuilder();
 }
 
+function canTakeQuiz(q) {
+  return q.questions.length > 0 && q.questions.every(qu => {
+    if (!qu.q.trim()) return false;
+    if ((qu.type||'mc') === 'text') return qu.choices.length > 0 && qu.choices[0].text.trim();
+    return qu.choices.some(c=>c.correct) && qu.choices.filter(c=>c.text.trim()).length >= 2;
+  });
+}
+
 function renderQuizBuilder() {
   const area = document.getElementById('quizBuilderArea');
   const q = activeQuizId ? getQuiz() : null;
@@ -646,7 +671,7 @@ function renderQuizBuilder() {
     area.innerHTML = `<div class="no-quiz-placeholder"><div class="emoji">📝</div><p>Select a quiz or create a new one</p></div>`;
     return;
   }
-  const canTake = q.questions.length > 0 && q.questions.every(qu => qu.choices.some(c=>c.correct) && qu.choices.filter(c=>c.text.trim()).length >= 2);
+  const canTake = canTakeQuiz(q);
   area.innerHTML = `
     <div class="quiz-builder">
       <div class="builder-top">
@@ -667,6 +692,27 @@ function renderQuizBuilder() {
 
 function renderQuestionCard(qu, qi) {
   const letters = ['A','B','C','D','E'];
+  const type = qu.type || 'mc';
+  const choicesHTML = type === 'text'
+    ? `<div class="choice-row" id="choicerow-${qi}-0">
+        <span class="choice-letter" style="color:var(--accent2)">✓</span>
+        <input class="choice-input correct-choice" type="text"
+          placeholder="Correct answer (exact match)..." value="${esc(qu.choices[0]?.text||'')}"
+          oninput="updateTextAnswer(${qi},this.value)"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();}">
+       </div>`
+    : qu.choices.map((c,ci) => `
+        <div class="choice-row" id="choicerow-${qi}-${ci}">
+          <span class="choice-letter">${letters[ci]}</span>
+          <input type="radio" class="choice-radio" name="correct-${qi}" ${c.correct?'checked':''}
+            onchange="setCorrect(${qi},${ci})">
+          <input class="choice-input${c.correct?' correct-choice':''}" type="text"
+            placeholder="Answer choice..." value="${esc(c.text)}"
+            oninput="updateChoice(${qi},${ci},this.value)"
+            onkeydown="choiceKeydown(event,${qi},${ci})">
+          ${qu.choices.length > 1 ? `<span class="choice-del" onclick="deleteChoice(${qi},${ci})">✕</span>` : ''}
+        </div>`).join('');
+
   return `
     <div class="q-card" id="qcard-${qi}">
       <div class="q-card-header">
@@ -675,20 +721,14 @@ function renderQuestionCard(qu, qi) {
           oninput="updateQuestion(${qi},'q',this.value)">
         <span class="q-del" onclick="deleteQuestion(${qi})">✕</span>
       </div>
-      <div class="choices-list" id="choices-${qi}">
-        ${qu.choices.map((c,ci) => `
-          <div class="choice-row" id="choicerow-${qi}-${ci}">
-            <span class="choice-letter">${letters[ci]}</span>
-            <input type="radio" class="choice-radio" name="correct-${qi}" ${c.correct?'checked':''}
-              onchange="setCorrect(${qi},${ci})">
-            <input class="choice-input${c.correct?' correct-choice':''}" type="text"
-              placeholder="Answer choice..." value="${esc(c.text)}"
-              oninput="updateChoice(${qi},${ci},this.value)"
-              onkeydown="choiceKeydown(event,${qi},${ci})">
-            ${qu.choices.length > 2 ? `<span class="choice-del" onclick="deleteChoice(${qi},${ci})">✕</span>` : ''}
-          </div>`).join('')}
+      <div class="q-type-toggle">
+        <button class="q-type-btn${type==='mc'?' active':''}" onclick="setQuestionType(${qi},'mc')">Multiple Choice</button>
+        <button class="q-type-btn${type==='text'?' active':''}" onclick="setQuestionType(${qi},'text')">Text Input</button>
       </div>
-      ${qu.choices.length < 5 ? `<button class="choice-add-btn" onclick="addChoice(${qi})">+ add choice</button>` : ''}
+      <div class="choices-list" id="choices-${qi}">
+        ${choicesHTML}
+      </div>
+      ${type==='mc' && qu.choices.length < 5 ? `<button class="choice-add-btn" onclick="addChoice(${qi})">+ add choice</button>` : ''}
       <div class="explanation-row">
         <textarea class="explanation-input" rows="1" placeholder="Explanation (optional) — shown after answering..."
           oninput="updateQuestion(${qi},'explanation',this.value);this.style.height='auto';this.style.height=this.scrollHeight+'px'"
@@ -702,9 +742,8 @@ function updateQuizName(val) {
 }
 
 function addQuestion() {
-  getQuiz().questions.push({ q: '', choices: [{text:'',correct:false},{text:'',correct:false}], explanation: '' });
+  getQuiz().questions.push({ q: '', type: 'mc', choices: [{text:'',correct:false}], explanation: '' });
   save(); renderQuizBuilder();
-  // Focus the new question input
   setTimeout(() => {
     const inputs = document.querySelectorAll('.q-text-input');
     if (inputs.length) inputs[inputs.length-1].focus();
@@ -717,11 +756,9 @@ function deleteQuestion(qi) {
 
 function updateQuestion(qi, field, val) {
   getQuiz().questions[qi][field] = val; save();
-  // Re-render just the take button area if needed
   const q = getQuiz();
-  const canTake = q.questions.length > 0 && q.questions.every(qu => qu.choices.some(c=>c.correct) && qu.choices.filter(c=>c.text.trim()).length >= 2);
   const btn = document.querySelector('.builder-actions');
-  if (btn) btn.innerHTML = canTake ? `<button class="btn btn-blue" onclick="takeQuiz('${q.id}')">▶ Take Quiz</button>` : '';
+  if (btn) btn.innerHTML = canTakeQuiz(q) ? `<button class="btn btn-blue" onclick="takeQuiz('${q.id}')">▶ Take Quiz</button>` : '';
 }
 
 function choiceKeydown(e, qi, ci) {
@@ -749,6 +786,29 @@ function choiceKeydown(e, qi, ci) {
   }
 }
 
+function setQuestionType(qi, type) {
+  const qu = getQuiz().questions[qi];
+  qu.type = type;
+  if (type === 'text') {
+    // Keep first choice as the answer, clear the rest
+    const ans = qu.choices.find(c=>c.correct) || qu.choices[0];
+    qu.choices = [{ text: ans ? ans.text : '', correct: true }];
+  } else {
+    // Switch back to MC — start with 1 blank choice
+    if (!qu.choices.length || (qu.choices.length === 1 && qu.choices[0].correct)) {
+      qu.choices = [{ text: qu.choices[0]?.text||'', correct: true }, { text: '', correct: false }];
+    }
+  }
+  save(); renderQuizBuilder();
+}
+
+function updateTextAnswer(qi, val) {
+  const qu = getQuiz().questions[qi];
+  qu.choices = [{ text: val, correct: true }];
+  save();
+  updateQuestion(qi, 'q', qu.q);
+}
+
 function addChoice(qi) {
   const qu = getQuiz().questions[qi];
   if (qu.choices.length >= 5) return;
@@ -757,7 +817,7 @@ function addChoice(qi) {
 
 function deleteChoice(qi, ci) {
   const qu = getQuiz().questions[qi];
-  if (qu.choices.length <= 2) return;
+  if (qu.choices.length <= 1) return;
   const wasCorrect = qu.choices[ci].correct;
   qu.choices.splice(ci, 1);
   if (wasCorrect && qu.choices.length) qu.choices[0].correct = true;
@@ -830,6 +890,7 @@ function autoGenerateQuiz() {
 function showTakeQ() {
   const { questions, idx } = takeQuizData;
   const qu = questions[idx];
+  const type = qu.type || 'mc';
   setP((idx / questions.length) * 100);
   document.getElementById('quizCounter').textContent = `Question ${idx+1} of ${questions.length}`;
   document.getElementById('quizQuestion').textContent = qu.q;
@@ -840,12 +901,54 @@ function showTakeQ() {
   document.getElementById('quizNext').classList.remove('visible');
 
   const letters = ['A','B','C','D','E'];
-  const shuffled = [...qu.choices].sort(() => Math.random() - 0.5);
-  document.getElementById('quizOptions').innerHTML = shuffled.map((c,i) => `
-    <button class="quiz-option" onclick="answerTakeQ(this, ${c.correct})">
-      <span class="opt-letter">${letters[i]}</span>
-      <span>${esc(c.text)}</span>
-    </button>`).join('');
+
+  if (type === 'text') {
+    document.getElementById('quizOptions').innerHTML = `
+      <input class="quiz-text-answer" id="textAnswerInput" type="text"
+        placeholder="Type your answer..." autocomplete="off"
+        onkeydown="if(event.key==='Enter')submitTextAnswer()">
+      <button class="btn btn-outline" style="margin-top:8px;width:100%" onclick="submitTextAnswer()">Submit</button>`;
+    setTimeout(() => document.getElementById('textAnswerInput')?.focus(), 50);
+  } else {
+    const shuffled = [...qu.choices].sort(() => Math.random() - 0.5);
+    document.getElementById('quizOptions').innerHTML = shuffled.map((c,i) => `
+      <button class="quiz-option" onclick="answerTakeQ(this, ${c.correct})">
+        <span class="opt-letter">${letters[i]}</span>
+        <span>${esc(c.text)}</span>
+      </button>`).join('');
+  }
+}
+
+function submitTextAnswer() {
+  const input = document.getElementById('textAnswerInput');
+  if (!input || input.disabled) return;
+  const { questions, idx } = takeQuizData;
+  const qu = questions[idx];
+  const correct = qu.choices[0].text.trim().toLowerCase();
+  const given = input.value.trim().toLowerCase();
+  const isCorrect = given === correct;
+  input.disabled = true;
+  input.className = 'quiz-text-answer ' + (isCorrect ? 'correct-ans' : 'wrong-ans');
+  document.querySelector('#quizOptions .btn-outline').disabled = true;
+
+  if (isCorrect) {
+    takeQuizData.score++;
+    document.getElementById('quizFeedback').textContent = '✓ Correct!';
+    document.getElementById('quizFeedback').className = 'quiz-feedback correct';
+  } else {
+    document.getElementById('quizFeedback').textContent = `✗ Correct answer: "${qu.choices[0].text}"`;
+    document.getElementById('quizFeedback').className = 'quiz-feedback wrong';
+  }
+
+  const explanation = qu.explanation;
+  if (explanation && explanation.trim()) {
+    document.getElementById('quizExplanation').textContent = '💡 ' + explanation;
+    document.getElementById('quizExplanation').className = 'quiz-explanation show';
+  }
+
+  const isLast = idx >= questions.length - 1;
+  document.getElementById('quizNext').textContent = isLast ? 'See Results' : 'Next Question';
+  document.getElementById('quizNext').classList.add('visible');
 }
 
 function answerTakeQ(btn, isCorrect) {
@@ -861,15 +964,6 @@ function answerTakeQ(btn, isCorrect) {
     btn.classList.add('wrong');
     document.getElementById('quizFeedback').textContent = '✗ Wrong!';
     document.getElementById('quizFeedback').className = 'quiz-feedback wrong';
-    // Reveal correct
-    document.querySelectorAll('.quiz-option').forEach(o => {
-      const spans = o.querySelectorAll('span');
-      // find the correct one by checking data — re-map from shuffled
-      if (o !== btn) {
-        // We stored isCorrect inline via onclick, check all options
-      }
-    });
-    // Highlight correct answer
     document.querySelectorAll('.quiz-option').forEach(o => {
       if (o.getAttribute('onclick') && o.getAttribute('onclick').includes('true')) {
         o.classList.add('reveal-correct');
@@ -877,7 +971,6 @@ function answerTakeQ(btn, isCorrect) {
     });
   }
 
-  // Show explanation if present
   const explanation = questions[idx].explanation;
   if (explanation && explanation.trim()) {
     document.getElementById('quizExplanation').textContent = '💡 ' + explanation;
