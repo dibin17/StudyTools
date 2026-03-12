@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>FlashDeck</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='5' y='7' width='22' height='15' rx='3' fill='%23e07848' opacity='.5'/><rect x='2' y='5' width='22' height='15' rx='3' fill='%23c0622f' opacity='.75'/><rect x='1' y='9' width='22' height='14' rx='3' fill='%23c0622f'/><line x1='4' y1='14' x2='19' y2='14' stroke='white' stroke-width='1.8' stroke-linecap='round'/><line x1='4' y1='18' x2='13' y2='18' stroke='white' stroke-width='1.8' stroke-linecap='round' opacity='.65'/></svg>">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;1,9..144,400&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -169,6 +170,11 @@ input::placeholder, textarea::placeholder { color: var(--muted2); font-style: it
 .explanation-input:focus { border-color: var(--accent); color: var(--ink); }
 .add-q-row { display: flex; justify-content: center; }
 
+/* Collapsible answers */
+.q-answers-toggle { font-family: 'DM Mono', monospace; font-size: 0.6rem; color: var(--muted); background: none; border: none; cursor: pointer; padding: 0; display: flex; align-items: center; gap: 4px; transition: color .15s; margin-bottom: 8px; }
+.q-answers-toggle:hover { color: var(--text); }
+.q-answers-body { display: block; }
+.q-answers-body.collapsed { display: none; }
 /* Question type toggle */
 .q-type-toggle { display: flex; gap: 6px; margin-bottom: 10px; }
 .q-type-btn { font-family: 'DM Mono', monospace; font-size: 0.6rem; text-transform: uppercase; letter-spacing: .06em; padding: 4px 10px; border-radius: 6px; border: 1.5px solid var(--border2); background: transparent; color: var(--muted); cursor: pointer; transition: all .15s; }
@@ -657,11 +663,29 @@ function deleteQuiz(e, qid) {
 }
 
 function canTakeQuiz(q) {
-  return q.questions.length > 0 && q.questions.every(qu => {
+  // Button shows as long as at least one question is fully valid
+  if (!q.questions.length) return false;
+  return q.questions.some(qu => {
     if (!qu.q.trim()) return false;
     if ((qu.type||'mc') === 'text') return qu.choices.length > 0 && qu.choices[0].text.trim();
     return qu.choices.some(c=>c.correct) && qu.choices.filter(c=>c.text.trim()).length >= 2;
   });
+}
+
+function validQuestionsOnly(q) {
+  // When taking the quiz, only use valid questions
+  return q.questions.filter(qu => {
+    if (!qu.q.trim()) return false;
+    if ((qu.type||'mc') === 'text') return qu.choices.length > 0 && qu.choices[0].text.trim();
+    return qu.choices.some(c=>c.correct) && qu.choices.filter(c=>c.text.trim()).length >= 2;
+  });
+}
+
+function refreshTakeBtn() {
+  const q = getQuiz();
+  if (!q) return;
+  const btn = document.querySelector('.builder-actions');
+  if (btn) btn.innerHTML = canTakeQuiz(q) ? `<button class="btn btn-blue" onclick="takeQuiz('${q.id}')">▶ Take Quiz</button>` : '';
 }
 
 function renderQuizBuilder() {
@@ -725,14 +749,19 @@ function renderQuestionCard(qu, qi) {
         <button class="q-type-btn${type==='mc'?' active':''}" onclick="setQuestionType(${qi},'mc')">Multiple Choice</button>
         <button class="q-type-btn${type==='text'?' active':''}" onclick="setQuestionType(${qi},'text')">Text Input</button>
       </div>
-      <div class="choices-list" id="choices-${qi}">
-        ${choicesHTML}
-      </div>
-      ${type==='mc' && qu.choices.length < 5 ? `<button class="choice-add-btn" onclick="addChoice(${qi})">+ add choice</button>` : ''}
-      <div class="explanation-row">
-        <textarea class="explanation-input" rows="1" placeholder="Explanation (optional) — shown after answering..."
-          oninput="updateQuestion(${qi},'explanation',this.value);this.style.height='auto';this.style.height=this.scrollHeight+'px'"
-          style="overflow:hidden">${esc(qu.explanation||'')}</textarea>
+      <button class="q-answers-toggle" onclick="toggleAnswers(${qi},this)">
+        <span id="qtoggleicon-${qi}">▾</span> Answers
+      </button>
+      <div class="q-answers-body" id="qanswers-${qi}">
+        <div class="choices-list" id="choices-${qi}">
+          ${choicesHTML}
+        </div>
+        ${type==='mc' && qu.choices.length < 5 ? `<button class="choice-add-btn" onclick="addChoice(${qi})">+ add choice</button>` : ''}
+        <div class="explanation-row">
+          <textarea class="explanation-input" rows="1" placeholder="Explanation (optional) — shown after answering..."
+            oninput="updateQuestion(${qi},'explanation',this.value);this.style.height='auto';this.style.height=this.scrollHeight+'px'"
+            style="overflow:hidden">${esc(qu.explanation||'')}</textarea>
+        </div>
       </div>
     </div>`;
 }
@@ -756,9 +785,19 @@ function deleteQuestion(qi) {
 
 function updateQuestion(qi, field, val) {
   getQuiz().questions[qi][field] = val; save();
-  const q = getQuiz();
-  const btn = document.querySelector('.builder-actions');
-  if (btn) btn.innerHTML = canTakeQuiz(q) ? `<button class="btn btn-blue" onclick="takeQuiz('${q.id}')">▶ Take Quiz</button>` : '';
+  refreshTakeBtn();
+}
+
+function updateChoice(qi, ci, val) {
+  getQuiz().questions[qi].choices[ci].text = val; save();
+  refreshTakeBtn();
+}
+
+function updateTextAnswer(qi, val) {
+  const qu = getQuiz().questions[qi];
+  qu.choices = [{ text: val, correct: true }];
+  save();
+  refreshTakeBtn();
 }
 
 function choiceKeydown(e, qi, ci) {
@@ -786,6 +825,13 @@ function choiceKeydown(e, qi, ci) {
   }
 }
 
+function toggleAnswers(qi, btn) {
+  const body = document.getElementById('qanswers-'+qi);
+  const icon = document.getElementById('qtoggleicon-'+qi);
+  const collapsed = body.classList.toggle('collapsed');
+  icon.textContent = collapsed ? '▸' : '▾';
+}
+
 function setQuestionType(qi, type) {
   const qu = getQuiz().questions[qi];
   qu.type = type;
@@ -802,14 +848,7 @@ function setQuestionType(qi, type) {
   save(); renderQuizBuilder();
 }
 
-function updateTextAnswer(qi, val) {
-  const qu = getQuiz().questions[qi];
-  qu.choices = [{ text: val, correct: true }];
-  save();
-  updateQuestion(qi, 'q', qu.q);
-}
-
-function addChoice(qi) {
+function setCorrect(qi, ci) {
   const qu = getQuiz().questions[qi];
   if (qu.choices.length >= 5) return;
   qu.choices.push({text:'',correct:false}); save(); renderQuizBuilder();
@@ -824,22 +863,16 @@ function deleteChoice(qi, ci) {
   save(); renderQuizBuilder();
 }
 
-function updateChoice(qi, ci, val) {
-  getQuiz().questions[qi].choices[ci].text = val; save();
-  updateQuestion(qi, 'q', getQuiz().questions[qi].q); // trigger canTake re-check
-}
-
 function setCorrect(qi, ci) {
   const qu = getQuiz().questions[qi];
   qu.choices.forEach((c,i) => c.correct = i === ci);
   save();
-  // Update choice input styling without full re-render
   const letters = ['A','B','C','D','E'];
   qu.choices.forEach((c,i) => {
     const inp = document.querySelector(`#choicerow-${qi}-${i} .choice-input`);
     if (inp) inp.className = 'choice-input' + (c.correct ? ' correct-choice' : '');
   });
-  updateQuestion(qi, 'q', qu.q);
+  refreshTakeBtn();
 }
 
 // ── TAKE QUIZ ─────────────────────────────────────────
@@ -848,9 +881,8 @@ let takeQuizData = null; // { questions, idx, score, quizId }
 function takeQuiz(qid) {
   const q = getQuiz(qid);
   if (!q) return;
-  let questions = [...q.questions];
-  // Shuffle
-  questions = questions.sort(() => Math.random() - 0.5);
+  let questions = validQuestionsOnly(q).sort(() => Math.random() - 0.5);
+  if (!questions.length) { alert('No valid questions yet!'); return; }
 
   takeQuizData = { questions, idx: 0, score: 0, quizId: qid };
   document.getElementById('studyProjectName').textContent = proj().name;
